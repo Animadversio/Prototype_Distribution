@@ -107,7 +107,8 @@ class SimCLRModel(pl.LightningModule):
     def __init__(self):
         super().__init__()
 
-        self.hparam = args
+        self.hparam = vars(args)
+        self.save_hyperparameters(self.hparam)
         # create a ResNet backbone and remove the classification head
         resnet = torchvision.models.resnet18()
         self.backbone = nn.Sequential(*list(resnet.children())[:-1])
