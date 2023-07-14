@@ -1,6 +1,8 @@
-import matplotlib.pyplot as plt
-import numpy as np
+import os
+from pathlib import Path
 import pandas as pd
+import numpy as np
+import matplotlib.pylab as plt
 from torchvision.models import resnet18
 import torch
 import torch.nn as nn
@@ -45,6 +47,19 @@ def get_layer_shape_torch_naming(model, layerkey, input_shape=(3, 96, 96)):
 
 
 def pix_prototype_extract(model, layerkey, channel_rng=None, cnt_pos=None, imgpix=96, optcfg=None, show=True, seed=42):
+    """
+
+    :param model:   model to extract prototypes from
+    :param layerkey:   layer to extract prototypes from
+    :param channel_rng:  range of channels to extract prototypes from, if None, all channels are used
+                         expect a tuple of (start, end)
+    :param cnt_pos:  position of the prototype center, if None, the center of the feature map is used
+    :param imgpix:   size of the image to generate
+    :param optcfg:
+    :param show: whether to show the prototypes, Bool, default True
+    :param seed: random seed for initializing latent code / pixel. default 42
+    :return:
+    """
     optim_transform = Compose([GaussianBlur(5, sigma=(2, 2)),
                                RandomAffine(degrees=3, translate=(0.02, 0.02), ),
                                Normalize([0.485, 0.456, 0.406],
@@ -158,11 +173,11 @@ G.cuda().eval().requires_grad_(False)
 # model_df = get_module_name_shapes(new_model3, [torch.randn(1, 3, 96, 96).to("cuda")],
 #                         deepest=2, show=False, show_input=True, return_df=True,)
 #%%
-import numpy as np
-import matplotlib.pylab as plt
-from pathlib import Path
-savedir = r"D:\DL_Projects\SelfSupervise\ssl_train\stl10_rn18_RND1_keepclr_protodist"
-expdir = r"D:\DL_Projects\SelfSupervise\ssl_train\stl10_rn18_RND1_keepclr"
+# savedir = r"D:\DL_Projects\SelfSupervise\ssl_train\stl10_rn18_RND1_keepclr_protodist"
+# expdir = r"D:\DL_Projects\SelfSupervise\ssl_train\stl10_rn18_RND1_keepclr"
+savedir = r"D:\DL_Projects\SelfSupervise\ssl_train\stl10_rn18_RND1_clrjit_protodist"
+expdir = r"D:\DL_Projects\SelfSupervise\ssl_train\stl10_rn18_RND1_clrjit"
+os.makedirs(savedir, exist_ok=True)
 vis_transform = Compose([Resize((96, 96)), ])
 ckptlist = [*(Path(expdir)/"checkpoints").glob("*.pth")]+[*(Path(expdir)/"checkpoints").glob("*.ckpt")]
 # layerkey = "layer4"
@@ -189,18 +204,39 @@ for epoch, ckptpath in tqdm(enumerate(ckptlist)):
                                     channel_rng=(chan_beg, chan_end), imgpix=96, show=False, seed=RND)
             imgs_pix, mtg_pix, score_traj_pix, _ = pix_prototype_extract(new_model, layerkey,
                                     channel_rng=(chan_beg, chan_end), imgpix=96, show=False, seed=RND)
-            # show_imgrid(imgs_pix * fitrfmap[None,None], nrow=16)
-            # show_imgrid(vis_transform(imgs_G) * fitrfmap[None,None], nrow=16)
             mtg_pix.save(join(savedir, f"{batch_str}_pix_RND{RND}.jpg") )
             mtg_G.save(join(savedir, f"{batch_str}_GAN_RND{RND}.jpg") )
+            # show_imgrid(imgs_pix * fitrfmap[None,None], nrow=16)
+            # show_imgrid(vis_transform(imgs_G) * fitrfmap[None,None], nrow=16)
             save_imgrid(imgs_pix * fitrfmap[None,None],
                         join(savedir, f"{batch_str}_pixRF_RND{RND}.jpg"), nrow=int(np.sqrt(len(imgs_pix))), )
+            sucs_msk = ~(score_traj_pix[-1, :] == 0)
+            imgs_pix_sucs = imgs_pix * sucs_msk[:, None, None, None].float()
+            save_imgrid(imgs_pix_sucs * fitrfmap[None,None],
+                        join(savedir, f"{batch_str}_pixRF_sucs_RND{RND}.jpg"), nrow=int(np.sqrt(len(imgs_pix))), )
             save_imgrid(vis_transform(imgs_G) * fitrfmap[None,None],
                         join(savedir, f"{batch_str}_GANRF_RND{RND}.jpg"), nrow=int(np.sqrt(len(imgs_G))), )
+            sucs_msk = ~(score_traj_G[-1, :] == 0)
+            imgs_G_sucs = imgs_G * sucs_msk[:, None, None, None].float()
+            save_imgrid(vis_transform(imgs_G_sucs) * fitrfmap[None,None],
+                        join(savedir, f"{batch_str}_GANRF_sucs_RND{RND}.jpg"), nrow=int(np.sqrt(len(imgs_G))), )
             torch.save(score_traj_G, join(savedir, f"{batch_str}_GANRF_RND{RND}_score.pth"))
             torch.save(score_traj_pix, join(savedir, f"{batch_str}_pixRF_RND{RND}_score.pth"))
-
 #%%
+# 101 models, evol all filters, 101it [4:19:14, 154.00s/it]
+#%%
+import imageio
+# Set your image path here
+for suffix in ["layer1_000-064_GANRF_RND42",
+               "layer2_000-128_GANRF_RND42",
+               "layer3_000-256_GANRF_RND42",
+               "layer4_000-256_GANRF_RND42",
+               "layer4_256-512_GANRF_RND42",]:
+    # The images should be in format rn18_epXXX, where XXX is a three digit number
+    imgfps = [join(savedir, f"rn18_ep{epoch:03d}_{suffix}.jpg") for epoch in range(-1, 100)]
+    frames = [imageio.imread(imgfp) for imgfp in imgfps]
+    imageio.mimsave(join(savedir, f"rn18_{suffix}.mp4"), frames, format='mp4', fps=2)
+    imageio.mimsave(join(savedir, f"rn18_{suffix}.gif"), frames, format='gif', fps=2)
 
 #%%
 surrogate = surrogate3
