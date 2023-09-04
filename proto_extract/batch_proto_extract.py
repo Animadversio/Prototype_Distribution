@@ -21,6 +21,14 @@ from torchvision.utils import save_image
 # model type
 # ckpt_path = "simclr_stl10-epoch=19-val_loss_ssl=0.00.ckpt"
 def load_reformate_ckpt(ckpt_path):
+    """takes a ckpt path and return a model with loaded weights.
+
+    :return
+        new_model: a new model with the same architecture as resnet18, without renaming.
+            only the final fc layer is substituted with an identity layer.
+        surrogate: a surrogate model with the same architecture as resnet18,
+            but the layers are put in a sequential container, so no more layer1, layer2, etc.
+    """
     state_dict = torch.load(ckpt_path)
     if "state_dict" in state_dict.keys():
         state_dict = state_dict["state_dict"]
@@ -47,7 +55,7 @@ def get_layer_shape_torch_naming(model, layerkey, input_shape=(3, 96, 96)):
 
 
 def pix_prototype_extract(model, layerkey, channel_rng=None, cnt_pos=None, imgpix=96, optcfg=None, show=True, seed=42):
-    """
+    """ extract prototypes from a model, using pixel space optimization.
 
     :param model:   model to extract prototypes from
     :param layerkey:   layer to extract prototypes from
@@ -110,7 +118,7 @@ def pix_prototype_extract(model, layerkey, channel_rng=None, cnt_pos=None, imgpi
     return imgs, mtg, score_traj, grad_input
 
 
-def GAN_prototype_extract(model, layerkey, channel_rng=None, cnt_pos=None, imgpix=96, optcfg=None, show=True, seed=42):
+def GAN_prototype_extract(model, layerkey, channel_rng=None, zs_init=None, cnt_pos=None, imgpix=96, optcfg=None, show=True, seed=42):
     optim_transform = Compose([Resize((imgpix, imgpix)),
                                GaussianBlur(5, sigma=(2, 2)),
                                RandomAffine(degrees=3, translate=(0.02, 0.02), ),
@@ -129,8 +137,10 @@ def GAN_prototype_extract(model, layerkey, channel_rng=None, cnt_pos=None, imgpi
         channel_rng = (max(0, channel_rng[0]), min(C, channel_rng[1]))
     batch_size = channel_rng[1] - channel_rng[0]
     cnt_pos = ((H - 1) // 2, (W - 1) // 2) if cnt_pos is None else cnt_pos
-
-    zs = torch.randn(batch_size, 4096, generator=torch.Generator().manual_seed(seed)).cuda()
+    if zs_init is None:
+        zs = torch.randn(batch_size, 4096, generator=torch.Generator().manual_seed(seed)).cuda()
+    else:
+        zs = zs_init.clone().cuda().float()
     zs.requires_grad_(True)
     optim = torch.optim.Adam([zs], lr=0.01)
     pert_std = 0.0005
