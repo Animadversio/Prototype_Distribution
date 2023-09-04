@@ -169,15 +169,75 @@ def GAN_prototype_extract(model, layerkey, channel_rng=None, zs_init=None, cnt_p
     return imgs, mtg, score_traj, zs
 
 
+def cmaes_weights(n):
+    weights = np.log(n + 1) - np.log(np.arange(n) + 1)
+    weights = weights / np.sum(weights)
+    return weights
+
+
+def cma_pop_parallel_optimize(model, layerkey, channel_rng=None, imgpix=96,
+                              cnt_pos=None, zs_init=None, topK=8, cma_std=2, cma_steps=20, multiplier=4, seed=42):
+    # batch_size = 256
+    model_feat = create_feature_extractor(model, return_nodes=[layerkey])
+    with torch.no_grad():
+        out = model_feat(torch.randn(1, 3, imgpix, imgpix).cuda())
+        feattsr = out[layerkey]
+
+    _, C, H, W = feattsr.shape
+    if channel_rng is None:
+        channel_rng = (0, C)
+    else:
+        channel_rng = (max(0, channel_rng[0]), min(C, channel_rng[1]))
+    batch_size = channel_rng[1] - channel_rng[0]
+    cnt_pos = ((H - 1) // 2, (W - 1) // 2) if cnt_pos is None else cnt_pos
+    if zs_init is None:
+        zs = torch.randn(batch_size, 4096, generator=torch.Generator().manual_seed(seed)).cuda()
+    else:
+        zs = zs_init.clone().detach().float().cuda()
+    # zs.requires_grad_(True)
+    weights = torch.from_numpy(cmaes_weights(topK)).float().cuda()
+    for i in trange(cma_steps):
+        act_mat_tsr = []
+        diag_resp_tsr = []
+        zs_all = []
+        for k in range(multiplier):
+            zs_batch = zs + torch.randn(batch_size, 4096, ).cuda() * cma_std
+            with torch.no_grad():
+                imgs = G.visualize(zs_batch)
+                out = model_feat(optim_transform(imgs))[layerkey]
+
+            act_mat = out[:, channel_rng[0]:channel_rng[1], cnt_pos[0], cnt_pos[1]]
+            diag_resp = act_mat[torch.arange(batch_size), torch.arange(batch_size)]
+            act_mat_tsr.append(act_mat)
+            diag_resp_tsr.append(diag_resp)
+            zs_all.append(zs_batch)
+        act_mat_tsr = torch.cat(act_mat_tsr, dim=0)
+        diag_resp_tsr = torch.cat(diag_resp_tsr, dim=0)
+        zs_all = torch.cat(zs_all, dim=0)
+        sort_idx = act_mat_tsr.argsort(dim=0, descending=True)
+        topk_idx = sort_idx[:topK, :batch_size]  # channel range
+        zs = torch.einsum("i,ijk->jk", weights, zs_all[topk_idx, :])
+        # _, topK_idx = torch.topk(diag_resp_tsr, topK)
+        # topK_zs = zs_all[topK_idx]
+        # topK_act_mat = act_mat_tsr[topK_idx]
+        # topK_diag_resp = diag_resp_tsr[topK_idx]
+        # topK_zs_mean = topK_zs.mean(dim=0)
+        # # topK_zs_std = topK_zs.std(dim=0)
+        # zs = topK_zs_mean + torch.randn_like(topK_zs_mean) * topK_zs_std
+        print(f"{diag_resp_tsr.mean():.3f}+-{diag_resp_tsr.std():.3f} , "
+              f"(eq zero {torch.sum(diag_resp_tsr==0).item()} / {batch_size * multiplier})")
+    return zs
+
 #%%
 G = upconvGAN("fc6")
 G.cuda().eval().requires_grad_(False)
 #%%
-# expdir = r"D:\DL_Projects\SelfSupervise\ssl_train\stl10_rn18_RND1"
+expdir = r"D:\DL_Projects\SelfSupervise\ssl_train\stl10_rn18_RND1"
 # new_model0, surrogate0 = load_reformate_ckpt(join(expdir, "checkpoints", "model_init.pth"))
 # new_model1, surrogate1 = load_reformate_ckpt(join(expdir, "checkpoints", "model-epoch=00-train_loss_ssl=6.29.ckpt"))
 # new_model2, surrogate2 = load_reformate_ckpt(join(expdir, "checkpoints", "model-epoch=02-train_loss_ssl=5.93.ckpt"))
 # new_model3, surrogate3 = load_reformate_ckpt(join(expdir, "checkpoints", "model-epoch=03-train_loss_ssl=5.90.ckpt"))
+new_model, surrogate = load_reformate_ckpt(join(expdir, "checkpoints", "model-epoch=03-train_loss_ssl=5.90.ckpt"))
 # #%%
 # new_model3.cuda().eval().requires_grad_(False)
 # model_df = get_module_name_shapes(new_model3, [torch.randn(1, 3, 96, 96).to("cuda")],
@@ -190,22 +250,26 @@ expdir = r"D:\DL_Projects\SelfSupervise\ssl_train\stl10_rn18_RND1_clrjit"
 os.makedirs(savedir, exist_ok=True)
 vis_transform = Compose([Resize((96, 96)), ])
 ckptlist = [*(Path(expdir)/"checkpoints").glob("*.pth")]+[*(Path(expdir)/"checkpoints").glob("*.ckpt")]
+
 # layerkey = "layer4"
 # epoch = 0
 batch_size = 256
 for epoch, ckptpath in tqdm(enumerate(ckptlist)):
     netname = f"rn18_ep{epoch-1:03d}"
+    # prepare model, load in the checkpoint
     new_model, surrogate = load_reformate_ckpt(str(ckptpath))
     new_model.cuda().eval().requires_grad_(False)
     for layerkey in ["layer1", "layer2", "layer3", "layer4"]:
         C, H, W = get_layer_shape_torch_naming(new_model, layerkey, input_shape=(3, 96, 96))
         cnt_pos = ((H - 1) // 2, (W - 1) // 2)
+        # compute the gradient RF maps
         gradAmpmap = grad_RF_estimate_torch_naming(new_model, layerkey, (slice(None), *cnt_pos),
                                       input_size=(3, 96, 96), reps=10, batch=50, show=False)
         fitdict = fit_2dgauss(gradAmpmap, layerkey, outdir=None, plot=False)
         fitrfmap = fitdict["fitmap"]
         fitrfmap = fitrfmap / fitrfmap.max()
         np.savez(join(savedir, f"{netname}_{layerkey}_fitrfmap.npz"), **fitdict)
+        # Batch evolving the prototypes
         for chan_beg in range(0, C, batch_size):
             RND = 42
             chan_end = min(chan_beg + batch_size, C)
@@ -241,13 +305,106 @@ for suffix in ["layer1_000-064_GANRF_RND42",
                "layer2_000-128_GANRF_RND42",
                "layer3_000-256_GANRF_RND42",
                "layer4_000-256_GANRF_RND42",
-               "layer4_256-512_GANRF_RND42",]:
+               "layer4_256-512_GANRF_RND42",
+               "layer1_000-064_GANRF_sucs_RND42",
+               "layer2_000-128_GANRF_sucs_RND42",
+               "layer3_000-256_GANRF_sucs_RND42",
+               "layer4_000-256_GANRF_sucs_RND42",
+               "layer4_256-512_GANRF_sucs_RND42",
+               ]:
     # The images should be in format rn18_epXXX, where XXX is a three digit number
     imgfps = [join(savedir, f"rn18_ep{epoch:03d}_{suffix}.jpg") for epoch in range(-1, 100)]
     frames = [imageio.imread(imgfp) for imgfp in imgfps]
     imageio.mimsave(join(savedir, f"rn18_{suffix}.mp4"), frames, format='mp4', fps=2)
     imageio.mimsave(join(savedir, f"rn18_{suffix}.gif"), frames, format='gif', fps=2)
 
+
+#%%
+# savedir = r"D:\DL_Projects\SelfSupervise\ssl_train\stl10_rn18_RND1_keepclr_protodist"
+# expdir = r"D:\DL_Projects\SelfSupervise\ssl_train\stl10_rn18_RND1_keepclr"
+savedir = r"D:\DL_Projects\SelfSupervise\ssl_train\stl10_rn18_RND2_clrjit_protodist"
+expdir = r"D:\DL_Projects\SelfSupervise\ssl_train\stl10_rn18_RND2_clrjit"
+savedir = r"D:\DL_Projects\SelfSupervise\ssl_train\stl10_rn18_RND2_keepclr_protodist"
+expdir = r"D:\DL_Projects\SelfSupervise\ssl_train\stl10_rn18_RND2_keepclr"
+os.makedirs(savedir, exist_ok=True)
+vis_transform = Compose([Resize((96, 96)), ])
+ckptlist = [*(Path(expdir)/"checkpoints").glob("*.pth")]+[*(Path(expdir)/"checkpoints").glob("*.ckpt")]
+# layerkey = "layer4"
+# epoch = 0
+batch_size = 256
+for epoch, ckptpath in tqdm(enumerate(ckptlist)):
+    netname = f"rn18_ep{epoch-1:03d}"
+    # prepare model, load in the checkpoint
+    new_model, surrogate = load_reformate_ckpt(str(ckptpath))
+    new_model.cuda().eval().requires_grad_(False)
+    for layerkey in ["layer1", "layer2", "layer3", "layer4"]:
+        C, H, W = get_layer_shape_torch_naming(new_model, layerkey, input_shape=(3, 96, 96))
+        cnt_pos = ((H - 1) // 2, (W - 1) // 2)
+        # compute the gradient RF maps
+        gradAmpmap = grad_RF_estimate_torch_naming(new_model, layerkey, (slice(None), *cnt_pos),
+                                      input_size=(3, 96, 96), reps=10, batch=50, show=False)
+        fitdict = fit_2dgauss(gradAmpmap, layerkey, outdir=None, plot=False)
+        fitrfmap = fitdict["fitmap"]
+        fitrfmap = fitrfmap / fitrfmap.max()
+        np.savez(join(savedir, f"{netname}_{layerkey}_fitrfmap.npz"), **fitdict)
+        # Batch evolving the prototypes
+        for chan_beg in range(0, C, batch_size):
+            RND = 42
+            chan_end = min(chan_beg + batch_size, C)
+            batch_str = f"{netname}_{layerkey}_{chan_beg:03d}-{chan_end:03d}"
+            # find a proper initialization that makes the gradient non-zero
+            zs_cma = cma_pop_parallel_optimize(new_model, layerkey, channel_rng=(chan_beg, chan_end),
+                                               cma_std=2, topK=8, multiplier=4, cma_steps=20, seed=RND)
+            # GAN_prototype_extract(new_model, "layer3", channel_rng=None, zs_init=zs_cma, show=True, seed=42)
+            imgs_G, mtg_G, score_traj_G, zs = GAN_prototype_extract(new_model, layerkey,
+                                    channel_rng=(chan_beg, chan_end), zs_init=zs_cma, imgpix=96, show=False) # , seed=RND
+            mtg_G.save(join(savedir, f"{batch_str}_GAN_RND{RND}.jpg") )
+            save_imgrid(vis_transform(imgs_G) * fitrfmap[None,None],
+                        join(savedir, f"{batch_str}_GANRF_RND{RND}.jpg"), nrow=int(np.sqrt(len(imgs_G))), )
+            sucs_msk = ~(score_traj_G[-1, :] == 0)
+            imgs_G_sucs = imgs_G * sucs_msk[:, None, None, None].float()
+            save_imgrid(vis_transform(imgs_G_sucs) * fitrfmap[None,None],
+                        join(savedir, f"{batch_str}_GANRF_sucs_RND{RND}.jpg"), nrow=int(np.sqrt(len(imgs_G))), )
+            torch.save(score_traj_G, join(savedir, f"{batch_str}_GANRF_RND{RND}_score_cmagrad.pth"))
+            # raise Exception
+            # imgs_pix, mtg_pix, score_traj_pix, _ = pix_prototype_extract(new_model, layerkey,
+            #                         channel_rng=(chan_beg, chan_end), imgpix=96, show=False, seed=RND)
+            # mtg_pix.save(join(savedir, f"{batch_str}_pix_RND{RND}.jpg") )
+            # show_imgrid(imgs_pix * fitrfmap[None,None], nrow=16)
+            # show_imgrid(vis_transform(imgs_G) * fitrfmap[None,None], nrow=16)
+            # save_imgrid(imgs_pix * fitrfmap[None,None],
+            #             join(savedir, f"{batch_str}_pixRF_RND{RND}.jpg"), nrow=int(np.sqrt(len(imgs_pix))), )
+            # sucs_msk = ~(score_traj_pix[-1, :] == 0)
+            # imgs_pix_sucs = imgs_pix * sucs_msk[:, None, None, None].float()
+            # save_imgrid(imgs_pix_sucs * fitrfmap[None,None],
+            #             join(savedir, f"{batch_str}_pixRF_sucs_RND{RND}.jpg"), nrow=int(np.sqrt(len(imgs_pix))), )
+            # torch.save(score_traj_pix, join(savedir, f"{batch_str}_pixRF_RND{RND}_score.pth"))
+#%%
+# 101 models, evol all filters, 101it [4:19:14, 154.00s/it]
+#%%
+import imageio
+# Set your image path here
+for suffix in ["layer1_000-064_GANRF_RND42",
+               "layer2_000-128_GANRF_RND42",
+               "layer3_000-256_GANRF_RND42",
+               "layer4_000-256_GANRF_RND42",
+               "layer4_256-512_GANRF_RND42",
+               "layer1_000-064_GANRF_sucs_RND42",
+               "layer2_000-128_GANRF_sucs_RND42",
+               "layer3_000-256_GANRF_sucs_RND42",
+               "layer4_000-256_GANRF_sucs_RND42",
+               "layer4_256-512_GANRF_sucs_RND42",
+               ]:
+    # The images should be in format rn18_epXXX, where XXX is a three digit number
+    imgfps = [join(savedir, f"rn18_ep{epoch:03d}_{suffix}.jpg") for epoch in range(-1, 100)]
+    frames = [imageio.imread(imgfp) for imgfp in imgfps]
+    imageio.mimsave(join(savedir, f"rn18_{suffix}.mp4"), frames, format='mp4', fps=2)
+    imageio.mimsave(join(savedir, f"rn18_{suffix}.gif"), frames, format='gif', fps=2)
+
+
+
+#%%
+# dev zone
 #%%
 surrogate = surrogate3
 surrogate.eval().cuda()
@@ -295,16 +452,97 @@ optim_transform = Compose([Resize((96, 96)),
                                      [0.229, 0.224, 0.225])])
 vis_transform = Compose([Resize((96, 96)),])
 batch_size = 256
-zs = torch.randn(batch_size, 4096, generator=torch.Generator().manual_seed(42)).cuda()
-zs.requires_grad_(True)
-optim = torch.optim.Adam([zs], lr=0.01)
 cnt_pos = (1, 1)
 pert_std = 0.0005
 score_traj = []
+surrogate.cuda().eval().requires_grad_(False)
+
+#%% CMA step
+new_model.cuda().eval().requires_grad_(False)
+zs_cma = cma_pop_parallel_optimize(new_model, "layer3", cma_std=2, topK=8, multiplier=4, cma_steps=20)
+#%%
+GAN_prototype_extract(new_model, "layer3", channel_rng=None, zs_init=zs_cma, show=True, seed=42)
+#%%
+# CMAES weights
+topK = 8
+weights = torch.from_numpy(cmaes_weights(topK)).float().cuda()
+cma_std = 2
+cma_steps = 20
+multiplier = 4
+zs = torch.randn(batch_size, 4096, generator=torch.Generator().manual_seed(42)).cuda()
+# zs.requires_grad_(True)
+for i in trange(cma_steps):
+    act_mat_tsr = []
+    diag_resp_tsr = []
+    zs_all = []
+    for k in range(multiplier):
+        zs_batch = zs + torch.randn(batch_size, 4096, ).cuda() * cma_std
+        with torch.no_grad():
+            imgs = G.visualize(zs_batch)
+            out = surrogate[:-1](optim_transform(imgs))
+
+        act_mat = out[:, :, cnt_pos[0], cnt_pos[1]]
+        diag_resp = act_mat[torch.arange(batch_size), torch.arange(batch_size)]
+        zs_all.append(zs_batch)
+        act_mat_tsr.append(act_mat)
+        diag_resp_tsr.append(diag_resp)
+    zs = torch.cat(zs_all, dim=0)
+    act_mat = torch.cat(act_mat_tsr, dim=0)
+    diag_resp = torch.cat(diag_resp_tsr, dim=0)
+    # raise Exception
+    sort_idx = act_mat.argsort(dim=0, descending=True)
+    topk_idx = sort_idx[:topK, :batch_size]  # channel range
+    zs = torch.einsum("i,ijk->jk", weights, zs[topk_idx, :])
+    # zs = zs[None,] + torch.randn(multiplier, *zs.shape).cuda() * cma_std
+    # zs = zs.view(-1, zs.shape[-1])
+    print(f"{diag_resp.mean():.3f}+-{diag_resp.std():.3f} , "
+          f"(eq zero {torch.sum(diag_resp==0).item()} / {batch_size * multiplier})")
+#%%
+# CMAES weights
+# topK = 16
+# weights = torch.from_numpy(cmaes_weights(topK)).float().cuda()
+# cma_std = 2
+# multiplier = 32
+# zs = torch.randn(batch_size, 4096, generator=torch.Generator().manual_seed(42)).cuda()
+# # zs.requires_grad_(True)
+# for i in trange(100):
+#     act_mat_tsr = []
+#     diag_resp_tsr = []
+#     zs_all = []
+#     for k in range(multiplier):
+#         zs_batch = zs + torch.randn(batch_size, 4096, ).cuda() * cma_std
+#         with torch.no_grad():
+#             imgs = G.visualize(zs_batch)
+#             out = surrogate[:-1](optim_transform(imgs))
+#
+#         act_mat = out[:, :, cnt_pos[0], cnt_pos[1]]
+#         diag_resp = act_mat[torch.arange(batch_size), torch.arange(batch_size)]
+#         zs_all.append(zs_batch)
+#         act_mat_tsr.append(act_mat)
+#         diag_resp_tsr.append(diag_resp)
+#     zs = torch.stack(zs_all, dim=0)
+#     act_mat = torch.stack(act_mat_tsr, dim=0)
+#     diag_resp = torch.stack(diag_resp_tsr, dim=0)
+#     # raise Exception
+#     sort_idx = diag_resp.argsort(dim=0, descending=True)
+#     topk_idx = sort_idx[:topK, :]  # channel range
+#     zs = torch.einsum("i,ijk->jk", weights,
+#                       torch.gather(zs, dim=0, index=topk_idx[:,:,None].repeat(1, 1, 4096)))
+#     #%%
+#     # zs = zs[None,] + torch.randn(multiplier, *zs.shape).cuda() * cma_std
+#     # zs = zs.view(-1, zs.shape[-1])
+#     print(f"{diag_resp.mean():.3f}+-{diag_resp.std():.3f} , (eq zero {torch.sum(diag_resp == 0).item()})")
+#     # raise Exception
+#%%
+# zs = torch.randn(batch_size, 4096, generator=torch.Generator().manual_seed(42)).cuda()
+pert_std = 0.5
+zs.requires_grad_(True)
+optim = torch.optim.Adam([zs], lr=0.01)
 for i in trange(100):
     imgs = G.visualize(zs)
     out = surrogate[:-1](optim_transform(imgs))
     act_mat = out[:, :, cnt_pos[0], cnt_pos[1]]
+    # raise Exception
     diag_resp = act_mat[torch.arange(batch_size), torch.arange(batch_size)]
     loss = -torch.sum(diag_resp)
     optim.zero_grad()
