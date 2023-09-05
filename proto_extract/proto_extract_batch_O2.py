@@ -9,13 +9,13 @@ import torch.nn as nn
 from os.path import join
 from tqdm import trange, tqdm
 from collections import OrderedDict
-from circuit_toolkit import upconvGAN, get_module_names
-from circuit_toolkit.layer_hook_utils import get_module_name_shapes
+# from circuit_toolkit import upconvGAN, get_module_names
+# from circuit_toolkit.layer_hook_utils import get_module_name_shapes
 from circuit_toolkit.plot_utils import show_imgrid, save_imgrid, to_imgrid
 from circuit_toolkit.GAN_utils import upconvGAN
 from circuit_toolkit.grad_RF_estim import grad_RF_estimate, fit_2dgauss, grad_RF_estimate_torch_naming
 from torchvision.transforms import Compose, Resize, ToTensor, Normalize, GaussianBlur, RandomAffine
-from torchvision.models.feature_extraction import create_feature_extractor, get_graph_node_names
+# from torchvision.models.feature_extraction import create_feature_extractor, get_graph_node_names
 import sys
 sys.path.append(r"/home/binxu/Github/Prototype_Distribution")
 sys.path.append(r"/home/biw905/Github/Prototype_Distribution")
@@ -38,12 +38,32 @@ def parse_epoch_from_filename(filename):
         return None
 
 
+import argparse
+parser = argparse.ArgumentParser(description="Your script description here.")
 
-expdir = r"/home/biw905/ssl_train/stl10_rn18_RND3_clrjit"
-suffix =  "_protodist"
-ckpt_rng = (0, 101)
-RND = 42
-batch_size = 256
+# Add arguments
+parser.add_argument("--expdir", type=str, default=r"ssl_train/stl10_rn18_RND4_clrjit", help="Experiment directory")
+parser.add_argument("--suffix", type=str, default="_protodist", help="Suffix for the experiment")
+parser.add_argument("--ckpt_beg", type=int, default=0, help="Checkpoint range start")
+parser.add_argument("--ckpt_end", type=int, default=101, help="Checkpoint range end")
+parser.add_argument("--init_RND", type=int, default=42, help="Random seed")
+parser.add_argument("--batch_size", type=int, default=256, help="Batch size")
+
+# Parse the arguments
+args = parser.parse_args()
+expdir = join("/n/scratch3/users/b/biw905/", args.expdir)
+suffix = args.suffix
+ckpt_rng = (args.ckpt_beg, args.ckpt_end)
+RND = args.init_RND
+batch_size = args.batch_size
+
+# expdir = r"/home/biw905/ssl_train/stl10_rn18_RND3_clrjit"
+# expdir = r"/n/scratch3/users/b/biw905/ssl_train/stl10_rn18_RND4_clrjit"
+# suffix =  "_protodist"
+# ckpt_rng = (0, 92)
+# RND = 42
+# batch_size = 256
+
 savedir = expdir + suffix
 os.makedirs(savedir, exist_ok=True)
 
