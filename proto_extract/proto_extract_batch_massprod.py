@@ -21,9 +21,8 @@ sys.path.append(r"/home/binxu/Github/Prototype_Distribution")
 sys.path.append(r"/home/biw905/Github/Prototype_Distribution")
 from proto_extract.proto_extract_lib import load_reformate_ckpt, get_layer_shape_torch_naming, \
     cma_independent_parallel_optimize, GAN_prototype_extract
+
 import re
-
-
 def parse_epoch_from_filename(filename):
     if filename.endswith("model_init.pth"):
         return -1
@@ -39,12 +38,14 @@ def parse_epoch_from_filename(filename):
 
 
 
-expdir = r"/home/biw905/ssl_train/stl10_rn18_RND3_clrjit"
-suffix =  "_protodist"
+
+# savedir = r"/home/binxu/DL_Projects/ssl_train/stl10_rn18_RND2_keepclr_protodist"
+expdir = r"/home/binxu/DL_Projects/ssl_train/stl10_rn18_RND2_keepclr"
+# expdir = r"/home/biw905/ssl_train/stl10_rn18_RND2_clrjit"
 ckpt_rng = (0, 101)
 RND = 42
 batch_size = 256
-savedir = expdir + suffix
+savedir = expdir + "_protodist"
 os.makedirs(savedir, exist_ok=True)
 
 G = upconvGAN("fc6")
@@ -91,12 +92,6 @@ for ckptpath in tqdm(ckptlist[ckpt_rng[0]:ckpt_rng[1]]):
                     break
                 else:
                     continue
-
-        # except np.linalg.LinAlgError:
-        #     print(f"Failed to fit 2d gaussian for {netname}_{layerkey}, using the gradient map instead.")
-        #     fitrfmap = gradAmpmap
-        #     fitrfmap = fitrfmap / fitrfmap.max()
-        #     np.savez(join(savedir, f"{netname}_{layerkey}_fitrf_failed.npz"), gradAmpmap=gradAmpmap)
         # Batch evolving the prototypes for all channels in this layer
         for chan_beg in range(0, C, batch_size):
             chan_end = min(chan_beg + batch_size, C)
