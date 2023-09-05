@@ -217,7 +217,7 @@ def cma_popmigrate_parallel_optimize(G, model, layerkey, channel_rng=None, imgpi
         zs_all = []
         for k in range(multiplier):
             # mutation, add CMA noise to zs
-            zs_batch = zs + torch.randn(batch_size, 4096, ).cuda() * cma_std
+            zs_batch = zs + torch.randn(batch_size, 4096, device="cuda") * cma_std
             with torch.no_grad():
                 imgs = G.visualize(zs_batch)
                 out = model_feat(optim_transform(imgs))[layerkey]

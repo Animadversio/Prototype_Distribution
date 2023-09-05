@@ -41,8 +41,9 @@ def parse_epoch_from_filename(filename):
 
 # savedir = r"/home/binxu/DL_Projects/ssl_train/stl10_rn18_RND2_keepclr_protodist"
 expdir = r"/home/binxu/DL_Projects/ssl_train/stl10_rn18_RND2_keepclr"
+expdir = r"/home/binxu/DL_Projects/ssl_train/stl10_rn18_RND2_clrjit"
 # expdir = r"/home/biw905/ssl_train/stl10_rn18_RND2_clrjit"
-ckpt_rng = (0, 101)
+ckpt_rng = (97, 101)
 RND = 42
 batch_size = 256
 savedir = expdir + "_protodist"
