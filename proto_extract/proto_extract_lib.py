@@ -123,7 +123,7 @@ def pix_prototype_extract(model, layerkey, channel_rng=None, cnt_pos=None, imgpi
 
 
 def GAN_prototype_extract(G, model, layerkey, channel_rng=None, zs_init=None, cnt_pos=None, imgpix=96,
-                          optcfg={"lr": 0.01, "steps": 100, "pert_std": 0.1}, optim_transform=None, show=True, seed=42, ):
+                          lr=0.01, steps=100, pert_std=0.1, optim_transform=None, show=True, seed=42, ):
     if optim_transform is None:
         optim_transform = Compose([Resize((imgpix, imgpix)),
                                GaussianBlur(5, sigma=(2, 2)),
@@ -148,10 +148,10 @@ def GAN_prototype_extract(G, model, layerkey, channel_rng=None, zs_init=None, cn
     else:
         zs = zs_init.clone().cuda().float()
     zs.requires_grad_(True)
-    optim = torch.optim.Adam([zs], lr=optcfg["lr"])
-    pert_std = optcfg["pert_std"]
+    optim = torch.optim.Adam([zs], lr=lr)
+    pert_std = pert_std
     score_traj = []
-    for i in trange(optcfg["steps"]):
+    for i in trange(steps):
         imgs = G.visualize(zs)
         out = model_feat(optim_transform(imgs))
         act_mat = out[layerkey][:, channel_rng[0]:channel_rng[1], cnt_pos[0], cnt_pos[1]]
