@@ -56,7 +56,7 @@ random_gray_scale = args.random_gray_scale
 # input_size = 96
 # num_ftrs = 32
 # seed = 1
-# pl.seed_everything(seed)
+pl.seed_everything(seed)
 # dataroot = "/home/biw905/Datasets"
 # dataroot = r"E:\Datasets"
 # exproot = "/home/biw905/ssl_train"
